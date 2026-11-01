@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -20,6 +21,9 @@ class MainForm : Form
     Label status = new Label();
     HashSet<string> added = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
     bool busy;
+
+    // All file/folder pickers start in the current user's folder (C:\Users\<name>).
+    static readonly string UserFolder = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
     // Files/folders dropped onto the .exe arrive as args.
     [STAThread]
@@ -85,14 +89,14 @@ class MainForm : Form
 
     void AddFiles(object sender, EventArgs e)
     {
-        using (var dlg = new OpenFileDialog { Filter = "AVI videos (*.avi)|*.avi", Multiselect = true })
+        using (var dlg = new OpenFileDialog { Filter = "AVI videos (*.avi)|*.avi", Multiselect = true, InitialDirectory = UserFolder })
             if (dlg.ShowDialog(this) == DialogResult.OK) AddPaths(dlg.FileNames);
     }
 
     void AddFolder(object sender, EventArgs e)
     {
-        using (var dlg = new FolderBrowserDialog { Description = "All .avi files in this folder and its subfolders will be added." })
-            if (dlg.ShowDialog(this) == DialogResult.OK) AddPaths(new[] { dlg.SelectedPath });
+        string folder = PickFolder("Add folder (subfolders are included)");
+        if (folder != null) AddPaths(new[] { folder });
     }
 
     void AddPaths(IEnumerable<string> paths)
@@ -148,12 +152,8 @@ class MainForm : Form
             status.Text = "Add some .avi files first.";
             return;
         }
-        string outputFolder;
-        using (var dlg = new FolderBrowserDialog { Description = "Choose where to save the MP4 files." })
-        {
-            if (dlg.ShowDialog(this) != DialogResult.OK) return;
-            outputFolder = dlg.SelectedPath;
-        }
+        string outputFolder = PickFolder("Choose where to save the MP4 files");
+        if (outputFolder == null) return;
 
         busy = true;
         buttons.Enabled = false;
@@ -253,5 +253,67 @@ class MainForm : Form
     {
         WaitFor(operation);
         return operation.GetResults();
+    }
+
+    // ---------- folder picker ----------
+
+    // The same Explorer-style window as the file picker, in folder mode, always starting in the user's folder.
+    // (.NET Framework's FolderBrowserDialog is the old tree view, so we use the Windows dialog directly.)
+    string PickFolder(string title)
+    {
+        var dialog = (IFileDialog)new FileOpenDialog();
+        dialog.SetOptions(FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
+        dialog.SetTitle(title);
+        IShellItem start;
+        SHCreateItemFromParsingName(UserFolder, IntPtr.Zero, typeof(IShellItem).GUID, out start);
+        dialog.SetFolder(start);
+        if (dialog.Show(Handle) != 0) return null;  // cancelled
+
+        IShellItem result;
+        dialog.GetResult(out result);
+        string path;
+        result.GetDisplayName(SIGDN_FILESYSPATH, out path);
+        return path;
+    }
+
+    const uint FOS_PICKFOLDERS = 0x20, FOS_FORCEFILESYSTEM = 0x40, SIGDN_FILESYSPATH = 0x80058000;
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
+    static extern void SHCreateItemFromParsingName(string path, IntPtr bindContext,
+        [MarshalAs(UnmanagedType.LPStruct)] Guid riid, out IShellItem item);
+
+    [ComImport, Guid("DC1C5A9C-E88A-4dde-A5A1-60F82A20AEF7")]
+    class FileOpenDialog { }
+
+    // Methods must stay in this exact order (it mirrors the Windows interface); unused ones are placeholders.
+    [ComImport, Guid("42f85136-db7e-439c-85f1-e4075d135fc8"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IFileDialog
+    {
+        [PreserveSig] int Show(IntPtr parent);
+        void SetFileTypes(uint count, IntPtr filters);
+        void SetFileTypeIndex(uint index);
+        void GetFileTypeIndex(out uint index);
+        void Advise(IntPtr events, out uint cookie);
+        void Unadvise(uint cookie);
+        void SetOptions(uint options);
+        void GetOptions(out uint options);
+        void SetDefaultFolder(IShellItem item);
+        void SetFolder(IShellItem item);
+        void GetFolder(out IShellItem item);
+        void GetCurrentSelection(out IShellItem item);
+        void SetFileName([MarshalAs(UnmanagedType.LPWStr)] string name);
+        void GetFileName([MarshalAs(UnmanagedType.LPWStr)] out string name);
+        void SetTitle([MarshalAs(UnmanagedType.LPWStr)] string title);
+        void SetOkButtonLabel([MarshalAs(UnmanagedType.LPWStr)] string label);
+        void SetFileNameLabel([MarshalAs(UnmanagedType.LPWStr)] string label);
+        void GetResult(out IShellItem item);
+    }
+
+    [ComImport, Guid("43826d1e-e718-42ee-bc55-a1e261c37bfe"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IShellItem
+    {
+        void BindToHandler(IntPtr bindContext, ref Guid handler, ref Guid riid, out IntPtr result);
+        void GetParent(out IShellItem parent);
+        void GetDisplayName(uint form, [MarshalAs(UnmanagedType.LPWStr)] out string name);
     }
 }
