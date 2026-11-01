@@ -37,7 +37,7 @@ class MainForm : Form
 
     MainForm()
     {
-        Text = "AVI to MP4";
+        Text = "camera-trap";
         Font = new Font("Segoe UI", 9f);
         Size = new Size(760, 500);
         StartPosition = FormStartPosition.CenterScreen;
