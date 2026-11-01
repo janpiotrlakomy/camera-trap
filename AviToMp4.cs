@@ -98,16 +98,28 @@ class MainForm : Form
     void AddPaths(IEnumerable<string> paths)
     {
         if (busy) return;
-        var files = new List<string>();
         foreach (string p in paths)
         {
-            if (Directory.Exists(p)) FindAvis(p, files);
-            else if (IsAvi(p)) files.Add(Path.GetFullPath(p));
+            string path = Path.GetFullPath(p);
+            if (Directory.Exists(path))
+            {
+                var files = new List<string>();
+                FindAvis(path, files);
+                files.Sort(StringComparer.OrdinalIgnoreCase);
+                foreach (string f in files) AddFile(f, path);
+            }
+            else if (IsAvi(path)) AddFile(path, Path.GetDirectoryName(path));
         }
-        files.Sort(StringComparer.OrdinalIgnoreCase);
-        foreach (string f in files)
-            if (added.Add(f)) list.Items.Add(new ListViewItem(new[] { f, "Waiting" }));
         status.Text = list.Items.Count + " file(s) in the list.";
+    }
+
+    // baseFolder is the folder the user picked; subfolders below it are recreated in the output folder.
+    void AddFile(string file, string baseFolder)
+    {
+        if (!added.Add(file)) return;
+        var item = new ListViewItem(new[] { file, "Waiting" });
+        item.Tag = baseFolder;
+        list.Items.Add(item);
     }
 
     // Skips folders we can't read (e.g. "System Volume Information" on an SD card).
@@ -131,6 +143,18 @@ class MainForm : Form
 
     async void ConvertAll(object sender, EventArgs e)
     {
+        if (list.Items.Count == 0)
+        {
+            status.Text = "Add some .avi files first.";
+            return;
+        }
+        string outputFolder;
+        using (var dlg = new FolderBrowserDialog { Description = "Choose where to save the MP4 files." })
+        {
+            if (dlg.ShowDialog(this) != DialogResult.OK) return;
+            outputFolder = dlg.SelectedPath;
+        }
+
         busy = true;
         buttons.Enabled = false;
         progress.Maximum = Math.Max(1, list.Items.Count);
@@ -142,27 +166,36 @@ class MainForm : Form
             item.SubItems[1].Text = "Converting...";
             item.EnsureVisible();
             string avi = item.Text;
-            string result = await Task.Run(() => ConvertFile(avi));
+            string mp4 = OutputPath(avi, (string)item.Tag, outputFolder);
+            string result = await Task.Run(() => ConvertFile(avi, mp4));
             item.SubItems[1].Text = result;
             if (result == "Done" || result.StartsWith("Skipped")) ok++;
             else { failed++; item.ForeColor = Color.Firebrick; }
             progress.Value++;
         }
 
-        status.Text = "Finished: " + ok + " OK, " + failed + " failed.";
+        status.Text = "Finished: " + ok + " OK, " + failed + " failed. Saved to " + outputFolder;
         buttons.Enabled = true;
         busy = false;
     }
 
+    // Keeps the subfolders below the folder the user added
+    // (trail cameras reuse names like IMAG0001.AVI in different folders).
+    static string OutputPath(string avi, string baseFolder, string outputFolder)
+    {
+        string relative = Path.ChangeExtension(avi, ".mp4").Substring(baseFolder.Length).TrimStart('\\');
+        return Path.Combine(outputFolder, relative);
+    }
+
     // Runs on a background thread. Writes to "name.mp4.part" and renames when finished,
     // so an interrupted conversion never leaves a broken .mp4 behind.
-    static string ConvertFile(string avi)
+    static string ConvertFile(string avi, string mp4)
     {
-        string mp4 = Path.ChangeExtension(avi, ".mp4");
         if (File.Exists(mp4)) return "Skipped (MP4 exists)";
         string part = mp4 + ".part";
         try
         {
+            Directory.CreateDirectory(Path.GetDirectoryName(mp4));
             StorageFile source = Wait(StorageFile.GetFileFromPathAsync(avi));
             StorageFolder folder = Wait(StorageFolder.GetFolderFromPathAsync(Path.GetDirectoryName(mp4)));
             StorageFile target = Wait(folder.CreateFileAsync(Path.GetFileName(part), CreationCollisionOption.ReplaceExisting));
