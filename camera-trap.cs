@@ -1,17 +1,14 @@
-// AVI -> MP4 converter using the video engine built into Windows 10/11.
-// Build with build.bat - nothing needs to be installed.
+// AVI -> MP4 converter. ffmpeg.exe is embedded in this exe (see build.bat), so it's a single file to download.
+// camera-trap is licensed under the GNU GPL version 3 (see LICENSE).
+// It bundles FFmpeg 9.0.2 (https://ffmpeg.org), also GPL version 3, see ffmpeg-LICENSE.txt.
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Runtime.InteropServices;
-using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
-using Windows.Foundation;
-using Windows.Media.MediaProperties;
-using Windows.Media.Transcoding;
-using Windows.Storage;
 
 class MainForm : Form
 {
@@ -72,9 +69,12 @@ class MainForm : Form
 
         FormClosing += (s, e) =>
         {
-            if (busy && MessageBox.Show(this, "A conversion is running. Quit anyway?", Text,
+            if (!busy) return;
+            if (MessageBox.Show(this, "A conversion is running. Quit anyway?", Text,
                     MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.No)
                 e.Cancel = true;
+            else
+                try { ffmpeg.Kill(); } catch { }  // otherwise it keeps running in the background
         };
     }
 
@@ -187,6 +187,8 @@ class MainForm : Form
         return Path.Combine(outputFolder, relative);
     }
 
+    static Process ffmpeg;  // the running conversion, so it can be stopped when the app is closed
+
     // Runs on a background thread. Writes to "name.mp4.part" and renames when finished,
     // so an interrupted conversion never leaves a broken .mp4 behind.
     static string ConvertFile(string avi, string mp4)
@@ -196,63 +198,53 @@ class MainForm : Form
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(mp4));
-            StorageFile source = Wait(StorageFile.GetFileFromPathAsync(avi));
-            StorageFolder folder = Wait(StorageFolder.GetFolderFromPathAsync(Path.GetDirectoryName(mp4)));
-            StorageFile target = Wait(folder.CreateFileAsync(Path.GetFileName(part), CreationCollisionOption.ReplaceExisting));
-
-            PrepareTranscodeResult transcode = Wait(new MediaTranscoder().PrepareFileTranscodeAsync(source, target, MakeProfile(source)));
-            if (!transcode.CanTranscode)
+            // H.264 + AAC: plays everywhere. crf 28 + veryfast: ~1/5 of ffmpeg's default size and 3x faster
+            // on grainy night footage, with the animals just as visible.
+            var info = new ProcessStartInfo(FfmpegPath(), string.Format(
+                "-hide_banner -loglevel error -y -i \"{0}\" -c:v libx264 -preset veryfast -crf 28 -pix_fmt yuv420p " +
+                "-c:a aac -b:a 128k -movflags +faststart -f mp4 \"{1}\"", avi, part));
+            info.UseShellExecute = false;
+            info.CreateNoWindow = true;
+            info.RedirectStandardError = true;
+            using (ffmpeg = Process.Start(info))
             {
-                File.Delete(part);
-                return "Unsupported format";
+                string errors = ffmpeg.StandardError.ReadToEnd();
+                ffmpeg.WaitForExit();
+                if (ffmpeg.ExitCode != 0)
+                {
+                    File.Delete(part);
+                    string[] lines = errors.Trim().Split('\n');
+                    return "Error: " + lines[lines.Length - 1].Trim();
+                }
             }
-            WaitFor(transcode.TranscodeAsync());
             File.Move(part, mp4);
             return "Done";
         }
         catch (Exception ex)
         {
             try { File.Delete(part); } catch { }
-            if (ex.HResult == unchecked((int)0xC00D36C4)) return "Unsupported format";
             return "Error: " + ex.Message;
         }
     }
 
-    // H.264/AAC MP4 with the same resolution and frame rate as the original.
-    // (Windows' own "Auto" profile doesn't work reliably, so we copy the values ourselves.)
-    static MediaEncodingProfile MakeProfile(StorageFile source)
+    // Unpacks the embedded ffmpeg.exe to %LOCALAPPDATA%\camera-trap once (the size in the
+    // name means a new version of the app with a different ffmpeg unpacks its own copy).
+    static string FfmpegPath()
     {
-        MediaEncodingProfile original = Wait(MediaEncodingProfile.CreateFromFileAsync(source));
-        MediaEncodingProfile profile = MediaEncodingProfile.CreateMp4(VideoEncodingQuality.HD1080p);
-        if (original.Video != null)
+        using (Stream embedded = typeof(MainForm).Assembly.GetManifestResourceStream("ffmpeg.exe"))
         {
-            profile.Video.Width = original.Video.Width;
-            profile.Video.Height = original.Video.Height;
-            double fps = 30;
-            if (original.Video.FrameRate.Numerator > 0 && original.Video.FrameRate.Denominator > 0)
+            string folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "camera-trap");
+            string path = Path.Combine(folder, "ffmpeg-" + embedded.Length + ".exe");
+            if (!File.Exists(path))
             {
-                profile.Video.FrameRate.Numerator = original.Video.FrameRate.Numerator;
-                profile.Video.FrameRate.Denominator = original.Video.FrameRate.Denominator;
-                fps = (double)original.Video.FrameRate.Numerator / original.Video.FrameRate.Denominator;
+                Directory.CreateDirectory(folder);
+                foreach (string old in Directory.GetFiles(folder, "ffmpeg-*"))  // copies from older versions
+                    try { File.Delete(old); } catch { }
+                using (var file = File.Create(path + ".tmp")) embedded.CopyTo(file);
+                File.Move(path + ".tmp", path);
             }
-            // ~0.1 bits per pixel per frame: good quality without bloated files
-            profile.Video.Bitrate = (uint)Math.Max(500000, original.Video.Width * original.Video.Height * fps * 0.1);
+            return path;
         }
-        if (original.Audio == null) profile.Audio = null;
-        return profile;
-    }
-
-    // Blocks until a Windows async operation finishes (fine here: we're on a background thread).
-    static void WaitFor(IAsyncInfo operation)
-    {
-        while (operation.Status == AsyncStatus.Started) Thread.Sleep(50);
-        if (operation.Status != AsyncStatus.Completed) throw operation.ErrorCode;
-    }
-
-    static T Wait<T>(IAsyncOperation<T> operation)
-    {
-        WaitFor(operation);
-        return operation.GetResults();
     }
 
     // ---------- folder picker ----------

@@ -21,8 +21,10 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: >
-          gh release delete ${{ github.ref_name }} --yes || true;
-          gh release create ${{ github.ref_name }} camera-trap.exe
-          --title "camera-trap ${{ github.ref_name }}"
-          --notes "Download **camera-trap.exe** and double-click it. Works on Windows 10 and 11 with nothing to install. Add .avi files or a whole folder, press Convert and pick where to save the MP4s."
+        run: |
+          gh release delete ${{ github.ref_name }} --yes || true
+          gh release create ${{ github.ref_name }} camera-trap.exe ffmpeg-LICENSE.txt \
+            --title "camera-trap ${{ github.ref_name }}" \
+            --notes "Download **camera-trap.exe** and double-click it. Works on Windows 10 and 11 with nothing to install. Add .avi files or a whole folder, press Convert and pick where to save the MP4s.
+
+          camera-trap is licensed under the GNU GPL version 3. camera-trap.exe includes [FFmpeg](https://ffmpeg.org) 9.0.2 (the essentials build from [gyan.dev](https://www.gyan.dev/ffmpeg/builds/)), also licensed under the GNU GPL version 3 (see ffmpeg-LICENSE.txt). FFmpeg source code: https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz"
